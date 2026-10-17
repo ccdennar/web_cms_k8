@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bakery-config
+  namespace: sweetcrumb
+data:
+  NODE_ENV: "production"
+  HOSTNAME: "0.0.0.0"
+  PORT: "3000"
+  NEXT_PUBLIC_SERVER_URL: "http://localhost:3002"

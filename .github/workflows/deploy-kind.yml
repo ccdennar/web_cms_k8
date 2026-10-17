@@ -1,0 +1,213 @@
+
+name: Sweetcrumb Phase 4 - Kubernetes CI
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      app_ref:
+        description: "web_cms branch, tag, or commit"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  APP_REPOSITORY: ccdennar/web_cms
+  APP_DIR: application/bakery-backend
+  IMAGE_NAME: sweetcrumb-bakery-backend
+  IMAGE_TAG: ci
+  CLUSTER_NAME: sweetcrumb
+  NAMESPACE: sweetcrumb
+
+jobs:
+  kubernetes-deployment:
+    name: Build and Deploy to Kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # ======================================
+      # STAGE 1: CHECKOUT KUBERNETES REPO
+      # ======================================
+      - name: Checkout Kubernetes repository
+        uses: actions/checkout@v4
+        with:
+          path: infrastructure
+
+      # ======================================
+      # STAGE 2: CHECKOUT APPLICATION REPO
+      # ======================================
+      - name: Checkout web_cms application
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPOSITORY }}
+          ref: ${{ inputs.app_ref || 'main' }}
+          path: application
+          persist-credentials: false
+
+      # ======================================
+      # STAGE 3: VERIFY APPLICATION
+      # ======================================
+      - name: Verify Dockerfile
+        run: |
+          set -euo pipefail
+
+          test -f "$APP_DIR/Dockerfile"
+          test -f "$APP_DIR/package.json"
+
+          echo "Application checkout verified."
+          echo "Dockerfile: $APP_DIR/Dockerfile"
+
+          git -C application rev-parse HEAD
+
+      # ======================================
+      # STAGE 4: SET UP DOCKER
+      # ======================================
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ======================================
+      # STAGE 5: BUILD APPLICATION IMAGE
+      # ======================================
+      - name: Build backend Docker image
+        run: |
+          set -euo pipefail
+
+          docker build \
+            --file "$APP_DIR/Dockerfile" \
+            --tag "$IMAGE_NAME:$IMAGE_TAG" \
+            "$APP_DIR"
+
+          docker image inspect \
+            "$IMAGE_NAME:$IMAGE_TAG"
+
+      # ======================================
+      # STAGE 6: CREATE KIND CLUSTER
+      # ======================================
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: sweetcrumb
+          wait: 120s
+
+      # ======================================
+      # STAGE 7: LOAD IMAGE INTO KIND
+      # ======================================
+      - name: Load Docker image
+        run: |
+          kind load docker-image \
+            "$IMAGE_NAME:$IMAGE_TAG" \
+            --name "$CLUSTER_NAME"
+
+      # ======================================
+      # STAGE 8: CREATE NAMESPACE
+      # ======================================
+      - name: Create Kubernetes namespace
+        run: |
+          kubectl apply \
+            -f infrastructure/k8s/base/namespace.yaml
+
+      # ======================================
+      # STAGE 9: CREATE LAB SECRETS
+      # ======================================
+      - name: Create CI Kubernetes Secrets
+        env:
+          DB_PASSWORD: ci-local-password
+          CMS_SECRET: ci-local-payload-secret
+        run: |
+          set -euo pipefail
+
+          kubectl -n "$NAMESPACE" \
+            create secret generic bakery-secrets \
+            --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
+            --from-literal=PAYLOAD_SECRET="$CMS_SECRET"
+
+      # ======================================
+      # STAGE 10: DEPLOY KUBERNETES
+      # ======================================
+      - name: Deploy Kubernetes manifests
+        run: |
+          kubectl apply -k \
+            infrastructure/k8s/overlays/local
+
+          kubectl -n "$NAMESPACE" \
+            set image deployment/bakery-backend \
+            bakery-backend="$IMAGE_NAME:$IMAGE_TAG"
+
+      # ======================================
+      # STAGE 11: WAIT FOR POSTGRESQL
+      # ======================================
+      - name: Wait for PostgreSQL
+        run: |
+          kubectl -n "$NAMESPACE" \
+            rollout status statefulset/postgres \
+            --timeout=240s
+
+      # ======================================
+      # STAGE 12: WAIT FOR APPLICATION
+      # ======================================
+      - name: Wait for backend rollout
+        run: |
+          kubectl -n "$NAMESPACE" \
+            rollout status deployment/bakery-backend \
+            --timeout=360s
+
+      # ======================================
+      # STAGE 13: VERIFY DEPLOYMENT
+      # ======================================
+      - name: Verify Kubernetes resources
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide
+          kubectl -n "$NAMESPACE" get deployments
+          kubectl -n "$NAMESPACE" get services
+          kubectl -n "$NAMESPACE" get pvc
+          kubectl -n "$NAMESPACE" get hpa
+          kubectl -n "$NAMESPACE" get pdb
+          kubectl -n "$NAMESPACE" get networkpolicy
+
+      # ======================================
+      # STAGE 14: TROUBLESHOOT ON FAILURE
+      # ======================================
+      - name: Collect failure diagnostics
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" get events \
+            --sort-by=.metadata.creationTimestamp || true
+          kubectl -n "$NAMESPACE" logs \
+            deployment/bakery-backend \
+            --all-containers=true \
+            --tail=100 || true
+          kubectl -n "$NAMESPACE" logs \
+            statefulset/postgres \
+            --tail=100 || true
+
+      # ======================================
+      # STAGE 15: SUMMARY
+      # ======================================
+      - name: Publish deployment summary
+        if: always()
+        env:
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## Sweetcrumb Kubernetes Phase 4"
+            echo ""
+            echo "- Application: ccdennar/web_cms"
+            echo "- Docker image: $IMAGE_NAME:$IMAGE_TAG"
+            echo "- Cluster: Kind"
+            echo "- Namespace: $NAMESPACE"
+            echo "- Result: $JOB_RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"
