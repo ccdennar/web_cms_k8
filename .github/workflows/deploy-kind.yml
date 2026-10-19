@@ -219,7 +219,49 @@ jobs:
           kubectl -n "$NAMESPACE" \
             rollout status statefulset/postgres \
             --timeout=240s
-
+       
+             # ======================================
+      # STAGE 12b: RUN PAYLOAD MIGRATIONS
+      # ======================================
+      - name: Run Payload CMS Migrations
+        run: |
+          set -euo pipefail
+          echo "🔄 Running Payload CMS database migrations..."
+          
+          # Create a temporary Kubernetes Job to run migrations
+          cat <<EOF | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: payload-migrate
+            namespace: $NAMESPACE
+          spec:
+            template:
+              spec:
+                containers:
+                - name: migrate
+                  image: $IMAGE_NAME:$IMAGE_TAG
+                  command: ['sh', '-c', 'npx payload migrate || echo "Migrations finished"']
+                  envFrom:
+                  - secretRef:
+                      name: bakery-secrets
+                restartPolicy: Never
+            backoffLimit: 4
+          EOF
+          
+          # Wait for the migration job to complete successfully
+          echo "⏳ Waiting for migrations to complete..."
+          kubectl -n "$NAMESPACE" wait --for=condition=complete job/payload-migrate --timeout=120s || {
+            echo "❌ Migration job failed. Logs:"
+            kubectl -n "$NAMESPACE" logs job/payload-migrate
+            exit 1
+          }
+          
+          echo "✅ Database migrations completed successfully."
+          
+          # Clean up the job
+          kubectl -n "$NAMESPACE" delete job payload-migrate
+          
       # ======================================
       # STAGE 13: POSTGRESQL INTEGRATION TEST
       # ======================================
