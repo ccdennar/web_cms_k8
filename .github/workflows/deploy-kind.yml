@@ -211,15 +211,46 @@ jobs:
 
           echo "Kubernetes resources deployed."
 
+      # =========================================
+      # STAGE 12: WAIT FOR POSTGRESQL (WITH DIAGNOSTICS)
       # ======================================
-      # STAGE 12: WAIT FOR POSTGRESQL
-      # ======================================
-
       - name: Wait for PostgreSQL
         run: |
-          kubectl -n "$NAMESPACE" \
-            rollout status statefulset/postgres \
-            --timeout=240s
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          
+          # 1. Check if it's a StatefulSet or Deployment and wait accordingly
+          if kubectl -n "$NAMESPACE" get statefulset postgres > /dev/null 2>&1; then
+            echo "Found StatefulSet 'postgres'. Waiting for rollout..."
+            kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=240s || {
+              echo "❌ PostgreSQL StatefulSet failed to become ready."
+              echo "--- Pod Status ---"
+              kubectl -n "$NAMESPACE" get pods -l app=postgres || true
+              echo "--- Pod Logs ---"
+              kubectl -n "$NAMESPACE" logs statefulset/postgres --tail=50 || true
+              echo "--- Pod Describe ---"
+              kubectl -n "$NAMESPACE" describe statefulset postgres || true
+              exit 1
+            }
+          elif kubectl -n "$NAMESPACE" get deployment postgres > /dev/null 2>&1; then
+            echo "Found Deployment 'postgres'. Waiting for rollout..."
+            kubectl -n "$NAMESPACE" rollout status deployment/postgres --timeout=240s || {
+              echo "❌ PostgreSQL Deployment failed to become ready."
+              echo "--- Pod Status ---"
+              kubectl -n "$NAMESPACE" get pods -l app=postgres || true
+              echo "--- Pod Logs ---"
+              kubectl -n "$NAMESPACE" logs deployment/postgres --tail=50 || true
+              echo "--- Pod Describe ---"
+              kubectl -n "$NAMESPACE" describe deployment postgres || true
+              exit 1
+            }
+          else
+            echo "❌ Neither StatefulSet nor Deployment named 'postgres' found in namespace $NAMESPACE"
+            echo "--- All Resources in Namespace ---"
+            kubectl -n "$NAMESPACE" get all
+            exit 1
+          fi
+          
+          echo "✅ PostgreSQL is ready and accepting connections."
 
       # ======================================
       # STAGE 12b: RUN PAYLOAD MIGRATIONS (FIXED)
