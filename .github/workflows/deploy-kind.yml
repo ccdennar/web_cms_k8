@@ -177,22 +177,22 @@ jobs:
       # STAGE 10: CREATE CI SECRETS
       # ======================================
 
-      - name: Update Kubernetes Secrets for CI
+      - name: Create Kubernetes test Secrets
         env:
           DB_PASSWORD: ci-local-password
           CMS_SECRET: ci-local-payload-secret
         run: |
           set -euo pipefail
-          echo "Updating Kubernetes secrets for CI environment..."
+          echo "Creating Kubernetes secrets for CI environment..."
           
-          # Overwrite the existing secret that the deployment manifest actually references
-          kubectl -n "$NAMESPACE" create secret generic sweetcrumb-secrets \
+          # Create the secret with the EXACT name your postgres manifest expects
+          kubectl -n "$NAMESPACE" create secret generic bakery-secrets \
             --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
-            --from-literal=DATABASE_URL="postgresql://sweetcrumb:${DB_PASSWORD}@postgres:5432/sweetcrumb" \
+            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
             --from-literal=PAYLOAD_SECRET="$CMS_SECRET" \
             --dry-run=client -o yaml | kubectl apply -f -
             
-          echo "✅ CI test Secrets updated successfully."
+          echo "✅ CI test Secrets created successfully."
 
       # ======================================
       # STAGE 11: DEPLOY POSTGRESQL AND APP
@@ -294,12 +294,12 @@ jobs:
           
           # 5. Run the migration against the port-forwarded database
           echo "Executing migrations..."
-          export DATABASE_URL="postgresql://sweetcrumb:${DB_PASSWORD}@localhost:5432/sweetcrumb"
+          export DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@localhost:5432/bakery"
           export PAYLOAD_SECRET="${CMS_SECRET}"
           
           echo "🔑 Using DATABASE_URL: $DATABASE_URL"
           
-          # Run migration. (Note: Your payload.config.ts has push: true, which auto-creates tables, 
+          # Run migration. (Your payload.config.ts has push: true, which auto-creates tables, 
           # but running migrate ensures schema tracking is initialized).
           npx payload migrate || echo "Migration step completed (push: true may have already synced schema)"
           
@@ -307,6 +307,7 @@ jobs:
           kill $PF_PID || true
           
           echo "✅ Database migrations completed successfully."
+     
 
       # ======================================
       # STAGE 13: POSTGRESQL INTEGRATION TEST
@@ -517,19 +518,3 @@ jobs:
             echo "| Application DB integration | Included |"
             echo "| Result | ${JOB_RESULT} |"
           } >> "$GITHUB_STEP_SUMMARY"
-
-
-
-
-
-
-
-            # ======================================
-      # STAGE 10: UPDATE CI SECRETS
-      # ======================================
-      
-
-      # ======================================
-      # STAGE 12b: RUN PAYLOAD MIGRATIONS (VERIFIED)
-      # ======================================
-      
