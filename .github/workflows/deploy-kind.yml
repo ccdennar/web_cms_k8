@@ -177,22 +177,23 @@ jobs:
       # STAGE 10: CREATE CI SECRETS
       # ======================================
 
-      - name: Create Kubernetes test Secrets
+      - name: Update Kubernetes Secrets for CI
         env:
           DB_PASSWORD: ci-local-password
           CMS_SECRET: ci-local-payload-secret
         run: |
           set -euo pipefail
-          echo "Creating Kubernetes secrets for CI environment..."
+          echo "Updating Kubernetes secrets for CI environment..."
           
-          # Create the secret with the EXACT name your postgres manifest expects
-          kubectl -n "$NAMESPACE" create secret generic bakery-secrets \
+          # The backend deployment expects a secret named 'sweetcrumb-secrets'
+          # We overwrite it with the correct CI database credentials (user: bakery, db: bakery)
+          kubectl -n "$NAMESPACE" create secret generic sweetcrumb-secrets \
             --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
             --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
             --from-literal=PAYLOAD_SECRET="$CMS_SECRET" \
             --dry-run=client -o yaml | kubectl apply -f -
             
-          echo "✅ CI test Secrets created successfully."
+            echo "✅ CI test Secrets updated successfully."
 
       # ======================================
       # STAGE 11: DEPLOY POSTGRESQL AND APP
@@ -252,7 +253,7 @@ jobs:
           
           echo "✅ PostgreSQL is ready and accepting connections."
 
-            # ======================================
+      # ======================================
       # STAGE 12b: RUN PAYLOAD MIGRATIONS (STRICT & VERIFIED)
       # ======================================
       - name: Run Payload CMS Migrations
@@ -294,12 +295,14 @@ jobs:
           
           # 5. Run the migration against the port-forwarded database
           echo "Executing migrations..."
+          
+          # Use the EXACT same credentials the backend pod will read from the secret
           export DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@localhost:5432/bakery"
           export PAYLOAD_SECRET="${CMS_SECRET}"
           
-          echo "🔑 Using DATABASE_URL: $DATABASE_URL"
+          echo "🔑 Migrating with DATABASE_URL: $DATABASE_URL"
           
-          # STRICT MODE: If this fails, the workflow MUST fail. No silent fallbacks.
+          # STRICT MODE: If this fails, the workflow MUST fail.
           npx payload migrate
           
           # 6. VERIFY: Check if tables were actually created in the database
