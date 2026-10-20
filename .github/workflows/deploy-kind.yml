@@ -190,7 +190,7 @@ jobs:
           
           kubectl -n "$NAMESPACE" create secret generic bakery-secrets \
             --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
-            --from-literal=DATABASE_URL="postgresql://sweetcrumb:${DB_PASSWORD}@postgres:5432/sweetcrumb" \
+            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
             --from-literal=PAYLOAD_SECRET="$CMS_SECRET"
             
           echo "✅ CI test Secrets created."
@@ -233,9 +233,9 @@ jobs:
           set -euo pipefail
           echo "🔄 Running Payload CMS database migrations..."
           
-          # 1. Port-forward the PostgreSQL deployment to the GitHub runner
-          echo "Starting port-forward to PostgreSQL deployment..."
-          kubectl -n "$NAMESPACE" port-forward deployment/postgres 5432:5432 &
+          # 1. Port-forward the PostgreSQL SERVICE to the GitHub runner
+          echo "Starting port-forward to PostgreSQL service..."
+          kubectl -n "$NAMESPACE" port-forward svc/postgres 5432:5432 &
           PF_PID=$!
           
           # 2. Wait and verify the port-forward is actually accepting connections
@@ -245,8 +245,11 @@ jobs:
           # Install postgresql-client briefly to verify the connection
           sudo apt-get update && sudo apt-get install -y postgresql-client > /dev/null 2>&1
           
-          if ! pg_isready -h localhost -p 5432 -U sweetcrumb; then
-            echo "❌ Failed to connect to port-forwarded database. Check if 'deployment/postgres' is the correct resource name."
+          # Verify the port is open and accepting connections
+          if ! pg_isready -h localhost -p 5432; then
+            echo "❌ Failed to connect to port-forwarded database."
+            echo "Checking postgres pods:"
+            kubectl -n "$NAMESPACE" get pods -l app=postgres || kubectl -n "$NAMESPACE" get pods || true
             kill $PF_PID || true
             exit 1
           fi
@@ -262,7 +265,7 @@ jobs:
           
           # 5. Run the migration against the port-forwarded database
           echo "Executing migrations..."
-          export DATABASE_URL="postgresql://sweetcrumb:${DB_PASSWORD}@localhost:5432/sweetcrumb"
+          export DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@localhost:5432/bakery"
           export PAYLOAD_SECRET="${CMS_SECRET}"
           
           echo "🔑 Using DATABASE_URL: $DATABASE_URL"
