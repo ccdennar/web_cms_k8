@@ -201,66 +201,63 @@ jobs:
             
           echo "✅ CI test Secrets created successfully."
 
+            # ======================================
+      # STAGE 11: DEPLOY KUBERNETES MANIFESTS
       # ======================================
-      # STAGE 11: DEPLOY POSTGRESQL AND APP
-      # ======================================
-
       - name: Deploy Kubernetes manifests
         run: |
           set -euo pipefail
+          echo "Deploying base Kubernetes manifests..."
+          kubectl apply -k infrastructure/k8s/overlays/local
+          echo "✅ Base manifests deployed."
 
-          kubectl apply -k \
-            infrastructure/k8s/overlays/local
+      # ======================================
+      # STAGE 11b: OVERWRITE SECRETS FOR CI
+      # ======================================
+      - name: Overwrite Secrets for CI
+        env:
+          DB_PASSWORD: ci-local-password
+          CMS_SECRET: ci-local-payload-secret
+        run: |
+          set -euo pipefail
+          echo "Overwriting secrets with CI credentials..."
+          
+          # Overwrite BOTH secrets to ensure Postgres and Backend get the right credentials.
+          # We do this AFTER 'kubectl apply -k' so the base dummy secrets don't overwrite ours.
+          kubectl -n "$NAMESPACE" create secret generic bakery-secrets \
+            --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
+            --from-literal=PAYLOAD_SECRET="$CMS_SECRET" \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-          kubectl -n "$NAMESPACE" \
-            set image deployment/bakery-backend \
-            bakery-backend="$IMAGE_NAME:$IMAGE_TAG"
+          kubectl -n "$NAMESPACE" create secret generic sweetcrumb-secrets \
+            --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
+            --from-literal=PAYLOAD_SECRET="$CMS_SECRET" \
+            --dry-run=client -o yaml | kubectl apply -f -
+            
+          echo "✅ CI secrets applied."
+          
+          # Restart backend to ensure it picks up the newly overwritten secret
+          echo "Restarting backend deployment to pick up new secrets..."
+          kubectl -n "$NAMESPACE" rollout restart deployment/bakery-backend
 
-          echo "Kubernetes resources deployed."
-
-      # =========================================
-      # STAGE 12: WAIT FOR POSTGRESQL (WITH DIAGNOSTICS)
+      # ======================================
+      # STAGE 12: WAIT FOR POSTGRESQL
       # ======================================
       - name: Wait for PostgreSQL
         run: |
           echo "⏳ Waiting for PostgreSQL to be ready..."
-          
-          # 1. Check if it's a StatefulSet or Deployment and wait accordingly
-          if kubectl -n "$NAMESPACE" get statefulset postgres > /dev/null 2>&1; then
-            echo "Found StatefulSet 'postgres'. Waiting for rollout..."
-            kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=240s || {
-              echo "❌ PostgreSQL StatefulSet failed to become ready."
-              echo "--- Pod Status ---"
-              kubectl -n "$NAMESPACE" get pods -l app=postgres || true
-              echo "--- Pod Logs ---"
-              kubectl -n "$NAMESPACE" logs statefulset/postgres --tail=50 || true
-              echo "--- Pod Describe ---"
-              kubectl -n "$NAMESPACE" describe statefulset postgres || true
-              exit 1
-            }
-          elif kubectl -n "$NAMESPACE" get deployment postgres > /dev/null 2>&1; then
-            echo "Found Deployment 'postgres'. Waiting for rollout..."
-            kubectl -n "$NAMESPACE" rollout status deployment/postgres --timeout=240s || {
-              echo "❌ PostgreSQL Deployment failed to become ready."
-              echo "--- Pod Status ---"
-              kubectl -n "$NAMESPACE" get pods -l app=postgres || true
-              echo "--- Pod Logs ---"
-              kubectl -n "$NAMESPACE" logs deployment/postgres --tail=50 || true
-              echo "--- Pod Describe ---"
-              kubectl -n "$NAMESPACE" describe deployment postgres || true
-              exit 1
-            }
-          else
-            echo "❌ Neither StatefulSet nor Deployment named 'postgres' found in namespace $NAMESPACE"
-            echo "--- All Resources in Namespace ---"
-            kubectl -n "$NAMESPACE" get all
+          kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=240s || {
+            echo "❌ PostgreSQL StatefulSet failed to become ready."
+            kubectl -n "$NAMESPACE" get pods -l app=postgres || true
+            kubectl -n "$NAMESPACE" logs statefulset/postgres --tail=50 || true
             exit 1
-          fi
-          
-          echo "✅ PostgreSQL is ready and accepting connections."
+          }
+          echo "✅ PostgreSQL is ready."
 
       # ======================================
-      # STAGE 12b: RUN PAYLOAD MIGRATIONS (STRICT & VERIFIED)
+      # STAGE 12b: RUN PAYLOAD MIGRATIONS
       # ======================================
       - name: Run Payload CMS Migrations
         env:
@@ -270,56 +267,41 @@ jobs:
           set -euo pipefail
           echo "🔄 Running Payload CMS database migrations..."
           
-          # 1. Port-forward the PostgreSQL SERVICE to the GitHub runner
-          echo "Starting port-forward to PostgreSQL service..."
-          kubectl -n "$NAMESPACE" port-forward svc/postgres 5432:5432 &
+          # 1. Port-forward the StatefulSet directly (bypasses any Service naming issues)
+          echo "Starting port-forward to StatefulSet postgres..."
+          kubectl -n "$NAMESPACE" port-forward statefulset/postgres 5432:5432 &
           PF_PID=$!
           
-          # 2. Wait and verify the port-forward is actually accepting connections
-          echo "Waiting for port-forward to be ready..."
           sleep 5
           
-          # Install postgresql-client briefly to verify the connection
+          # 2. Verify connection
           sudo apt-get update && sudo apt-get install -y postgresql-client > /dev/null 2>&1
-          
-          # Verify the port is open and accepting connections
           if ! pg_isready -h localhost -p 5432; then
             echo "❌ Failed to connect to port-forwarded database."
-            kubectl -n "$NAMESPACE" get pods || true
             kill $PF_PID || true
             exit 1
           fi
-          echo "✅ Port-forward verified. Database is reachable at localhost:5432"
+          echo "✅ Port-forward verified."
           
-          # 3. Navigate to the checked-out application source
+          # 3. Navigate to source and install deps
           cd application/bakery-backend
-          
-          # 4. Install dependencies (required for the payload CLI)
-          echo "Installing dependencies for migration..."
           corepack enable
           pnpm install --frozen-lockfile
           
-          # 5. Run the migration against the port-forwarded database
+          # 4. Run migration
           echo "Executing migrations..."
-          
-          # Use the EXACT same credentials the backend pod will read from the secret
           export DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@localhost:5432/bakery"
           export PAYLOAD_SECRET="${CMS_SECRET}"
-          
-          echo "🔑 Migrating with DATABASE_URL: $DATABASE_URL"
           
           # STRICT MODE: If this fails, the workflow MUST fail.
           npx payload migrate
           
-          # 6. VERIFY: Check if tables were actually created in the database
+          # 5. Verify tables exist
           echo "🔍 Verifying tables were created..."
           PGPASSWORD="$DB_PASSWORD" psql -h localhost -U bakery -d bakery -c "\dt"
           
-          # 7. Clean up port-forward
           kill $PF_PID || true
-          
           echo "✅ Database migrations completed and verified successfully."
-     
 
       # ======================================
       # STAGE 13: POSTGRESQL INTEGRATION TEST
