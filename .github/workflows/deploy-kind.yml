@@ -177,23 +177,29 @@ jobs:
       # STAGE 10: CREATE CI SECRETS
       # ======================================
 
-      - name: Update Kubernetes Secrets for CI
+      - name: Create Kubernetes test Secrets
         env:
           DB_PASSWORD: ci-local-password
           CMS_SECRET: ci-local-payload-secret
         run: |
           set -euo pipefail
-          echo "Updating Kubernetes secrets for CI environment..."
+          echo "Creating Kubernetes secrets for CI environment..."
           
-          # The backend deployment expects a secret named 'sweetcrumb-secrets'
-          # We overwrite it with the correct CI database credentials (user: bakery, db: bakery)
+          # 1. Create secret for PostgreSQL StatefulSet (expects 'bakery-secrets')
+          kubectl -n "$NAMESPACE" create secret generic bakery-secrets \
+            --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
+            --from-literal=PAYLOAD_SECRET="$CMS_SECRET" \
+            --dry-run=client -o yaml | kubectl apply -f -
+            
+          # 2. Create secret for Backend Deployment (expects 'sweetcrumb-secrets')
           kubectl -n "$NAMESPACE" create secret generic sweetcrumb-secrets \
             --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
             --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
             --from-literal=PAYLOAD_SECRET="$CMS_SECRET" \
             --dry-run=client -o yaml | kubectl apply -f -
             
-            echo "✅ CI test Secrets updated successfully."
+          echo "✅ CI test Secrets created successfully."
 
       # ======================================
       # STAGE 11: DEPLOY POSTGRESQL AND APP
