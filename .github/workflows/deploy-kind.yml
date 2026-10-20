@@ -183,14 +183,17 @@ jobs:
           CMS_SECRET: ci-local-payload-secret
         run: |
           set -euo pipefail
-
-          kubectl -n "$NAMESPACE" \
-            create secret generic bakery-secrets \
+          echo "Creating Kubernetes secrets..."
+          
+          # Delete if exists to allow workflow re-runs without manual cleanup
+          kubectl -n "$NAMESPACE" delete secret bakery-secrets --ignore-not-found=true
+          
+          kubectl -n "$NAMESPACE" create secret generic bakery-secrets \
             --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
-            --from-literal=DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@postgres:5432/bakery" \
+            --from-literal=DATABASE_URL="postgresql://sweetcrumb:${DB_PASSWORD}@postgres:5432/sweetcrumb" \
             --from-literal=PAYLOAD_SECRET="$CMS_SECRET"
-
-          echo "CI test Secrets created."
+            
+          echo "✅ CI test Secrets created."
 
       # ======================================
       # STAGE 11: DEPLOY POSTGRESQL AND APP
@@ -230,29 +233,44 @@ jobs:
           set -euo pipefail
           echo "🔄 Running Payload CMS database migrations..."
           
-          # 1. Port-forward the PostgreSQL service to the GitHub runner
-          echo "Starting port-forward to PostgreSQL..."
-          kubectl -n "$NAMESPACE" port-forward svc/postgres 5432:5432 &
+          # 1. Port-forward the PostgreSQL deployment to the GitHub runner
+          echo "Starting port-forward to PostgreSQL deployment..."
+          kubectl -n "$NAMESPACE" port-forward deployment/postgres 5432:5432 &
           PF_PID=$!
           
-          # Give it a moment to establish the connection
-          sleep 3
+          # 2. Wait and verify the port-forward is actually accepting connections
+          echo "Waiting for port-forward to be ready..."
+          sleep 5
           
-          # 2. Navigate to the checked-out application source
+          # Install postgresql-client briefly to verify the connection
+          sudo apt-get update && sudo apt-get install -y postgresql-client > /dev/null 2>&1
+          
+          if ! pg_isready -h localhost -p 5432 -U sweetcrumb; then
+            echo "❌ Failed to connect to port-forwarded database. Check if 'deployment/postgres' is the correct resource name."
+            kill $PF_PID || true
+            exit 1
+          fi
+          echo "✅ Port-forward verified. Database is reachable at localhost:5432"
+          
+          # 3. Navigate to the checked-out application source
           cd application/bakery-backend
           
-          # 3. Install dependencies (required for the payload CLI)
+          # 4. Install dependencies (required for the payload CLI)
           echo "Installing dependencies for migration..."
           corepack enable
           pnpm install --frozen-lockfile
           
-          # 4. Run the migration against the port-forwarded database
+          # 5. Run the migration against the port-forwarded database
           echo "Executing migrations..."
-          DATABASE_URL="postgresql://bakery:${DB_PASSWORD}@localhost:5432/bakery" \
-          PAYLOAD_SECRET="${CMS_SECRET}" \
+          export DATABASE_URL="postgresql://sweetcrumb:${DB_PASSWORD}@localhost:5432/sweetcrumb"
+          export PAYLOAD_SECRET="${CMS_SECRET}"
+          
+          echo "🔑 Using DATABASE_URL: $DATABASE_URL"
+          
+          # Run migration. If it fails, set -e will catch it and halt the workflow.
           npx payload migrate
           
-          # 5. Clean up port-forward
+          # 6. Clean up port-forward
           kill $PF_PID || true
           
           echo "✅ Database migrations completed successfully."
