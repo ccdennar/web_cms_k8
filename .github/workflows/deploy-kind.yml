@@ -367,13 +367,12 @@ jobs:
 
               echo "Application smoke test failed."
               exit 1
-      # ======================================
+            # ======================================
       # STAGE 15: APPLICATION SMOKE TEST
       # ======================================
       - name: Run application HTTP smoke test
         run: |
           set -euo pipefail
-
           echo "Testing Payload CMS HTTP endpoint..."
 
           kubectl -n "$NAMESPACE" run bakery-smoke-test \
@@ -393,8 +392,7 @@ jobs:
               done
               echo "Application smoke test failed."
               exit 1
-            '     
-
+            '
       # ======================================
       # STAGE 16: APPLICATION DATABASE TEST
       # ======================================
