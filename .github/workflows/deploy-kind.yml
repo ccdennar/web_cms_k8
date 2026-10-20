@@ -367,7 +367,33 @@ jobs:
 
               echo "Application smoke test failed."
               exit 1
-            '
+            # ======================================
+      # STAGE 15b: DIAGNOSE DATABASE STATE (CRITICAL)
+      # ======================================
+      - name: Diagnose Database State
+        if: always()
+        env:
+          DB_PASSWORD: ci-local-password
+        run: |
+          echo "========== 1. BACKEND ENVIRONMENT VARIABLES =========="
+          # This will show us EXACTLY what database URL the backend pod is using
+          kubectl -n "$NAMESPACE" exec deploy/bakery-backend -- sh -c 'printenv | grep -E "DATABASE|PAYLOAD"' || true
+          
+          echo "========== 2. CHECKING DATABASE TABLES =========="
+          # Port-forward to the database to inspect it directly
+          kubectl -n "$NAMESPACE" port-forward statefulset/postgres 5433:5432 &
+          PF_PID=$!
+          sleep 3
+          
+          # List all tables in the 'bakery' database
+          echo "Tables in 'bakery' database:"
+          PGPASSWORD="$DB_PASSWORD" psql -h localhost -p 5433 -U bakery -d bakery -c "\dt" || echo "Failed to connect or list tables"
+          
+          # List all databases to be absolutely sure
+          echo "All databases:"
+          PGPASSWORD="$DB_PASSWORD" psql -h localhost -p 5433 -U bakery -d postgres -c "\l" || true
+          
+          kill $PF_PID || true      
 
       # ======================================
       # STAGE 16: APPLICATION DATABASE TEST
