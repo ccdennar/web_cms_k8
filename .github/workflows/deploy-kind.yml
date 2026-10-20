@@ -252,8 +252,8 @@ jobs:
           
           echo "✅ PostgreSQL is ready and accepting connections."
 
-      # ======================================
-      # STAGE 12b: RUN PAYLOAD MIGRATIONS (FIXED)
+            # ======================================
+      # STAGE 12b: RUN PAYLOAD MIGRATIONS (STRICT & VERIFIED)
       # ======================================
       - name: Run Payload CMS Migrations
         env:
@@ -299,14 +299,17 @@ jobs:
           
           echo "🔑 Using DATABASE_URL: $DATABASE_URL"
           
-          # Run migration. (Your payload.config.ts has push: true, which auto-creates tables, 
-          # but running migrate ensures schema tracking is initialized).
-          npx payload migrate || echo "Migration step completed (push: true may have already synced schema)"
+          # STRICT MODE: If this fails, the workflow MUST fail. No silent fallbacks.
+          npx payload migrate
           
-          # 6. Clean up port-forward
+          # 6. VERIFY: Check if tables were actually created in the database
+          echo "🔍 Verifying tables were created..."
+          PGPASSWORD="$DB_PASSWORD" psql -h localhost -U bakery -d bakery -c "\dt"
+          
+          # 7. Clean up port-forward
           kill $PF_PID || true
           
-          echo "✅ Database migrations completed successfully."
+          echo "✅ Database migrations completed and verified successfully."
      
 
       # ======================================
